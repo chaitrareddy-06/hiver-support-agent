@@ -7,12 +7,16 @@ Scores BOTH:
 1. The original historical AmazonHelp reply (amazon_reply_text) -- all 200
    rows. This is what lets us measure judge-vs-human agreement: we already
    have human labels for these exact replies in golden_set_labeled.csv.
-2. The AI-drafted grounded reply (drafted_reply) -- however many rows have
-   one so far (currently 153/200, rest pending Groq quota reset).
+2. The AI-drafted grounded reply (drafted_reply) -- all 200 rows.
 
 This gives a direct, apples-to-apples comparison: how does our AI's reply
 quality compare to the real human agent's, on the exact same messages,
 scored by the exact same rubric?
+
+Judge model deliberately different from the drafting model (drafting used
+Groq's gpt-oss-20b/120b; judge uses qwen/qwen3.8-27b) to avoid self-grading
+bias -- a recognized good practice in LLM-as-judge setups, and also a
+practical necessity given daily token quota limits hit on the other models.
 
 Usage:
     python scripts/llm_judge.py        # all rows
@@ -31,7 +35,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-MODEL_NAME = "openai/gpt-oss-120b"
+MODEL_NAME = "qwen/qwen3.8-27b"
 
 GOLDEN_SET_PATH = "data/golden_set_labeled.csv"
 GROUNDED_REPLIES_PATH = "data/grounded_replies.csv"
@@ -142,27 +146,48 @@ def judge_batch(client, items):
     return {}
 
 
-def score_column(client, df, text_col, prefix):
-    """Judges df[text_col] for every row, with resume support, batched, checkpointed."""
+def load_existing(df, prefix):
+    """Loads already-judged results for one column (orig/draft) from disk, if present."""
     n = len(df)
+    results = [None] * n
 
-    existing = {}
-    if os.path.exists(OUTPUT_PATH):
-        prev = pd.read_csv(OUTPUT_PATH)
-        for _, row in prev.iterrows():
-            key = row["customer_tweet_id"]
-            if pd.notna(row.get(f"{prefix}_overall_quality")):
-                existing[key] = {
-                    "relevant": row.get(f"{prefix}_relevant"),
-                    "concrete_actionable": row.get(f"{prefix}_concrete_actionable"),
-                    "resolves_forward": row.get(f"{prefix}_resolves_forward"),
-                    "overall_quality": row.get(f"{prefix}_overall_quality"),
-                }
+    if not os.path.exists(OUTPUT_PATH):
+        return results
 
-    results = [existing.get(df.iloc[i]["customer_tweet_id"]) for i in range(n)]
+    prev = pd.read_csv(OUTPUT_PATH)
+    lookup = {}
+    for _, row in prev.iterrows():
+        key = row["customer_tweet_id"]
+        if pd.notna(row.get(f"{prefix}_overall_quality")):
+            lookup[key] = {
+                "relevant": row.get(f"{prefix}_relevant"),
+                "concrete_actionable": row.get(f"{prefix}_concrete_actionable"),
+                "resolves_forward": row.get(f"{prefix}_resolves_forward"),
+                "overall_quality": row.get(f"{prefix}_overall_quality"),
+            }
 
+    for i in range(n):
+        key = df.iloc[i]["customer_tweet_id"]
+        if key in lookup:
+            results[i] = lookup[key]
+
+    return results
+
+
+def score_column(client, df, text_col, prefix, results):
+    """
+    Judges df[text_col] for every row not already present in `results`,
+    batched, checkpointed. Mutates and yields `results` in place so the
+    caller always has an accurate, up-to-date list to save, even for rows
+    this call didn't touch.
+    """
+    n = len(df)
     rows_to_judge = [i for i in range(n) if results[i] is None and pd.notna(df.iloc[i][text_col])]
     print(f"[{prefix}] {n - len(rows_to_judge)} already judged, {len(rows_to_judge)} to judge.")
+
+    if not rows_to_judge:
+        yield results
+        return
 
     num_batches = (len(rows_to_judge) + BATCH_SIZE - 1) // BATCH_SIZE
     for b in range(num_batches):
@@ -192,7 +217,7 @@ def main():
     groq_key = os.environ.get("GROQ_API_KEY")
     if not groq_key:
         raise RuntimeError("GROQ_API_KEY environment variable not set.")
-    client = OpenAI(api_key=groq_key, base_url=GROQ_BASE_URL)
+    client = OpenAI(api_key=groq_key, base_url=GROQ_BASE_URL, timeout=30.0)
 
     print("Loading golden set and grounded replies...")
     golden_df = pd.read_csv(GOLDEN_SET_PATH)
@@ -207,7 +232,13 @@ def main():
         merged = merged.head(limit).copy()
     merged = merged.reset_index(drop=True)
 
-    def save(orig_results, draft_results):
+    # Load BOTH columns' existing progress up front, before any judging
+    # starts, so saving progress on one column never overwrites the other
+    # with an empty placeholder.
+    orig_results = load_existing(merged, "orig")
+    draft_results = load_existing(merged, "draft")
+
+    def save():
         out = merged[["customer_tweet_id", "customer_text", "amazon_reply_text", "drafted_reply"]].copy()
         for prefix, results in [("orig", orig_results), ("draft", draft_results)]:
             out[f"{prefix}_relevant"] = [r["relevant"] if r else None for r in results]
@@ -217,20 +248,15 @@ def main():
         out.to_csv(OUTPUT_PATH, index=False)
         return out
 
-    orig_results = [None] * len(merged)
-    draft_results = [None] * len(merged)
-
     print("\n--- Judging original historical replies ---")
-    for progress in score_column(client, merged, "amazon_reply_text", "orig"):
-        orig_results = progress
-        save(orig_results, draft_results)
+    for _ in score_column(client, merged, "amazon_reply_text", "orig", orig_results):
+        save()
 
     print("\n--- Judging AI-drafted grounded replies ---")
-    for progress in score_column(client, merged, "drafted_reply", "draft"):
-        draft_results = progress
-        save(orig_results, draft_results)
+    for _ in score_column(client, merged, "drafted_reply", "draft", draft_results):
+        save()
 
-    final = save(orig_results, draft_results)
+    final = save()
 
     print("\n=== SUMMARY ===")
     print("\nOriginal (human) reply quality:")
