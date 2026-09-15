@@ -45,7 +45,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-MODEL_NAME = "openai/gpt-oss-20b"
+MODEL_NAME = "openai/gpt-oss-120b"
 
 GOLDEN_SET_PATH = "data/golden_set_labeled.csv"
 RETRIEVAL_CORPUS_PATH = "data/retrieval_subsample.csv"
