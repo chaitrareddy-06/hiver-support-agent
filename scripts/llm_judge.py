@@ -39,7 +39,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-MODEL_NAME = "groq/compound-mini"
+MODEL_NAME = "allam-2-7b"
 
 GOLDEN_SET_PATH = "data/golden_set_labeled.csv"
 GROUNDED_REPLIES_PATH = "data/grounded_replies.csv"
