@@ -39,8 +39,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-MODEL_NAME = "allam-2-7b"
-
+MODEL_NAME = "qwen/qwen3.8-27b"
 GOLDEN_SET_PATH = "data/golden_set_labeled.csv"
 GROUNDED_REPLIES_PATH = "data/grounded_replies.csv"
 OUTPUT_PATH = "data/judge_scores.csv"
@@ -78,7 +77,31 @@ RUBRIC_INSTRUCTIONS = (
     '[{"index": 0, "relevant": "Yes", "concrete_actionable": "No", "resolves_forward": "Yes"}, ...]\n'
     "No extra commentary, no markdown fences -- JSON only."
 )
-
+FEW_SHOT_EXAMPLES = (
+    "\n\nHere are three calibration examples with correct verdicts, to anchor your judgment:\n\n"
+    "Example A (Good):\n"
+    "Customer: Got some facial cleasing balm I didn't order with the candy I ordered.\n"
+    "Reply: How odd! Select your order and then follow the prompts for a return label for the extra item here: [link]\n"
+    "Verdict: relevant=Yes, concrete_actionable=Yes, resolves_forward=Yes\n"
+    "Why: addresses the exact issue, gives a specific action (select order, follow prompts for a return label).\n\n"
+    "Example B (Acceptable):\n"
+    "Customer: since last 3 days 3 times rescheduling of pick up order has been done. But no one turns up to collect.\n"
+    "Reply: Sorry for the trouble with your return. I'd like to help. Please write to us (1/2)\n"
+    "Verdict: relevant=Yes, concrete_actionable=No, resolves_forward=Yes\n"
+    "Why: acknowledges the issue and asks the customer to reach out (moves forward), but 'please write to us' "
+    "alone is not a specific action -- no link, no instruction on what to include. This is a normal, everyday "
+    "acceptable reply, NOT a failure -- do not mark this kind of reply as Poor just because it isn't maximally "
+    "detailed.\n\n"
+    "Example C (Poor):\n"
+    "Customer: i am fed up your service.. this is my tracking 663407513\n"
+    "Reply: Please don't provide your order details, we consider it to be personal information. Our page is visible to the public.\n"
+    "Verdict: relevant=No, concrete_actionable=No, resolves_forward=No\n"
+    "Why: customer gave a specific tracking number asking for help; reply is generic boilerplate that doesn't "
+    "engage with their actual problem at all and doesn't move the issue forward.\n\n"
+    "Use these to calibrate: Example A is clearly Good, Example C is clearly Poor, and Example B shows that a "
+    "reasonably helpful but non-specific reply should land as Acceptable, not Poor. Most real replies will look "
+    "more like Example B than Example A or Example C -- don't force everything into Good or Poor.\n"
+)
 
 def derive_overall(relevant, concrete, resolves):
     no_count = sum(1 for v in [relevant, concrete, resolves] if v == "No")
@@ -98,8 +121,7 @@ def build_batch_prompt(items):
             f"  Customer message: {customer_text}\n"
             f"  Reply to judge: {reply_text}\n"
         )
-    return RUBRIC_INSTRUCTIONS, "\n".join(parts)
-
+    return RUBRIC_INSTRUCTIONS + FEW_SHOT_EXAMPLES, "\n".join(parts)
 
 def judge_batch(client, items):
     system_prompt, user_prompt = build_batch_prompt(items)
