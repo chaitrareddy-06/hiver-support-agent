@@ -14,9 +14,13 @@ quality compare to the real human agent's, on the exact same messages,
 scored by the exact same rubric?
 
 Judge model deliberately different from the drafting model (drafting used
-Groq's gpt-oss-20b/120b; judge uses qwen/qwen3.8-27b) to avoid self-grading
-bias -- a recognized good practice in LLM-as-judge setups, and also a
-practical necessity given daily token quota limits hit on the other models.
+Groq's gpt-oss-20b/120b) to avoid self-grading bias -- a recognized good
+practice in LLM-as-judge setups. Due to daily token quota limits being hit
+on multiple Groq models in succession (gpt-oss-20b, gpt-oss-120b,
+qwen3.8-27b, all exhausted on the same day), different rows in the final
+judge_scores.csv may have been scored by different judge models. Each row
+records exactly which model judged it in the *_judge_model columns, so
+this is fully transparent and auditable rather than hidden.
 
 Usage:
     python scripts/llm_judge.py        # all rows
@@ -35,7 +39,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 GROQ_BASE_URL = "https://api.groq.com/openai/v1"
-MODEL_NAME = "qwen/qwen3.8-27b"
+MODEL_NAME = "groq/compound-mini"
 
 GOLDEN_SET_PATH = "data/golden_set_labeled.csv"
 GROUNDED_REPLIES_PATH = "data/grounded_replies.csv"
@@ -164,6 +168,7 @@ def load_existing(df, prefix):
                 "concrete_actionable": row.get(f"{prefix}_concrete_actionable"),
                 "resolves_forward": row.get(f"{prefix}_resolves_forward"),
                 "overall_quality": row.get(f"{prefix}_overall_quality"),
+                "judge_model": row.get(f"{prefix}_judge_model"),
             }
 
     for i in range(n):
@@ -203,7 +208,7 @@ def score_column(client, df, text_col, prefix, results):
             if local_idx in batch_result:
                 r = batch_result[local_idx]
                 overall = derive_overall(r["relevant"], r["concrete_actionable"], r["resolves_forward"])
-                results[global_idx] = {**r, "overall_quality": overall}
+                results[global_idx] = {**r, "overall_quality": overall, "judge_model": MODEL_NAME}
 
         yield results  # allow caller to save progress after every batch
 
@@ -245,6 +250,7 @@ def main():
             out[f"{prefix}_concrete_actionable"] = [r["concrete_actionable"] if r else None for r in results]
             out[f"{prefix}_resolves_forward"] = [r["resolves_forward"] if r else None for r in results]
             out[f"{prefix}_overall_quality"] = [r["overall_quality"] if r else None for r in results]
+            out[f"{prefix}_judge_model"] = [r.get("judge_model") if r else None for r in results]
         out.to_csv(OUTPUT_PATH, index=False)
         return out
 
@@ -263,6 +269,8 @@ def main():
     print(final["orig_overall_quality"].value_counts())
     print("\nAI-drafted reply quality:")
     print(final["draft_overall_quality"].value_counts())
+    print("\nJudge models used (draft):")
+    print(final["draft_judge_model"].value_counts())
     print(f"\nSaved to {OUTPUT_PATH}")
 
 
